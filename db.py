@@ -46,13 +46,19 @@ def connect(path):
     return connection
 
 
+def version(connection):
+    """Current storage version: '1' (SDK1 tables) or '2' (SDK2 tables)."""
+    row = connection.execute("SELECT value FROM meta WHERE key='version'").fetchone()
+    return None if row is None else row[0]
+
+
 def initialize(connection):
     with atomic(connection):
         exists = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
         if exists:
-            version = connection.execute("SELECT value FROM meta WHERE key='version'").fetchone()
-            if version and version[0] != "1":
+            current = version(connection)
+            if current and current not in ("1", "2"):
                 raise ValueError("unsupported archive version")
         for statement in SCHEMA:
             connection.execute(statement)

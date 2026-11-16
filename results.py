@@ -3,8 +3,13 @@ from dataclasses import dataclass
 import json
 from fractions import Fraction
 from archive import encode
-from db import atomic
+from db import atomic, version
 from errors import UnknownTask, NotRun
+
+
+def _tables(connection):
+    suffix = "v2" if version(connection) == "2" else "v1"
+    return "tasks_" + suffix, "results_" + suffix
 
 
 @dataclass(frozen=True)
@@ -48,20 +53,22 @@ class Results:
             payload = {"model_id": result.model_id, "revision": result.revision,
                        "labels": list(result.labels), "means": [str(v) for v in result.means],
                        "covariance": [[str(v) for v in row] for row in result.covariance]}
+        tasks, results = _tables(self.store.connection)
         with atomic(self.store.connection, before_commit):
             self.store.connection.execute(
-                "INSERT INTO results_v1 VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET "
+                "INSERT INTO " + results + " VALUES(?,?,?) ON CONFLICT(task_id) DO UPDATE SET "
                 "status=excluded.status,payload=excluded.payload", (task.id, status, encode(payload)))
-            self.store.connection.execute("UPDATE tasks_v1 SET status=? WHERE task_id=?",
+            self.store.connection.execute("UPDATE " + tasks + " SET status=? WHERE task_id=?",
                                           (status, task.id))
 
     def get(self, task_id):
+        tasks, results = _tables(self.store.connection)
         exists = self.store.connection.execute(
-            "SELECT 1 FROM tasks_v1 WHERE task_id=?", (task_id,)).fetchone()
+            "SELECT 1 FROM " + tasks + " WHERE task_id=?", (task_id,)).fetchone()
         if exists is None:
             raise UnknownTask(task_id)
         row = self.store.connection.execute(
-            "SELECT status,payload FROM results_v1 WHERE task_id=?", (task_id,)).fetchone()
+            "SELECT status,payload FROM " + results + " WHERE task_id=?", (task_id,)).fetchone()
         if row is None:
             raise NotRun(task_id)
         obj = json.loads(row[1])

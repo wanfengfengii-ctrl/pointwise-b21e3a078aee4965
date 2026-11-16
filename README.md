@@ -9,6 +9,13 @@ Run from this project directory:
 
     python3.11 -B verify.py
     python3.11 -B demo.py
+    python3.11 -B migration_checks.py --fixtures
+    python3.11 -B migration_checks.py --verify
+    python3.11 -B migration_checks.py --demo
+
+--verify runs the complete original suite plus the migration checks; --demo
+upgrades a real legacy archive with a rolled-back first attempt, reopen,
+native SDK2 append and fixed-task reruns, printing computed JSON.
 
 The suite covers the archive, task validation, singular and deterministic
 conditioning, joint contrast covariance, publication rollback, frozen old
@@ -69,6 +76,35 @@ UnknownRevision; an unknown receipt returns None. All SQL uses bound values.
 archive.py owns models_v1, heads_v1 and receipts_v1. db.py owns meta and
 transaction setup. Raw canonical SDK1 JSON remains in models_v1.payload;
 the application does not discard original model revisions.
+
+## Storage upgrade to SDK2 factors
+
+migration.upgrade(store, before_commit=None) atomically migrates every
+models_v1/heads_v1/receipts_v1/tasks_v1/results_v1 row to the corresponding
+sdk2.SCHEMA table and flips meta version from '1' to '2'. Each (mean,
+covariance) revision is converted to an equivalent FactorModel: hard
+equations span the exact affine support mean + range(covariance), and the
+residual energy is (x-mean)' * covariance^+ * (x-mean) there, so singular
+and deterministic laws are preserved exactly. See INVARIANTS.md for the
+representation invariants.
+
+The upgrade is explicit: Store initialization never upgrades, and new empty
+databases start at version '1' with the original behavior. A failing
+before_commit rolls everything back; the old database keeps working and the
+call can be retried after close/reopen. Repeating the upgrade on version
+'2' is a no-op and does not invoke the hook. Unknown versions are rejected
+without writes.
+
+After the switch, Store, Analysis, Tasks and Results — including reopened
+objects — use only the *_v2 tables; the v1 tables remain verbatim for
+audit. put_model still accepts SDK1 models/payloads, converts them to
+factors and keeps receipt replay/conflict semantics; get_model still
+returns SDK1 Model value objects, recovering the exact moments from the
+stored factor. Native sdk2.append revisions are immediately visible to the
+old interface, and existing tasks keep their fixed revision binding.
+Analysis conditions by restricting the factor support with the exact
+observation equations; SDK1.conditional is no longer used after the
+switch.
 
 ## Tasks and results
 
@@ -138,7 +174,9 @@ five v2 tables; append(connection, model) appends a native head+1 revision;
 load(connection, id, revision) reads it or raises KeyError. These functions
 leave transaction ownership to the caller. Native append does not create
 a legacy request receipt. SDK2 has no mean/covariance, conditioning or old
-model conversion API. The active application uses only the SDK1 tables.
+model conversion API; factors.py provides exact moments/factor conversion
+and conditioning for the application. Before migration.upgrade the active
+application uses only the SDK1 tables; after it, only the SDK2 tables.
 Port tests exercise SDK2 separately in an in-memory database.
 
 samples.py contains four finite models and build_legacy(path), a standalone
@@ -162,3 +200,7 @@ tests/test_pipeline.py: disk persistence, reordered new revision, old-task
 binding, frozen database and publication failure/reopen/retry.
 tests/test_ports.py: exact generic elimination, both dependency ports,
 native factor storage and transactional DDL rollback/retry.
+tests/test_factor_upgrade.py: independent exact cross-checks for the
+upgraded representation — latent-generator density identities, multi-
+condition projection oracles, single-point support, variable reorder,
+native factor layouts and the legacy write path after upgrade.
